@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculadora Universal</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<style>
+  body{font-family:system-ui,'Segoe UI',sans-serif}
+  .mono{font-family:ui-monospace,'JetBrains Mono',Menlo,monospace}
+  .card{background:#fff;border:1px solid #d5dbe4;border-radius:1rem;box-shadow:0 1px 2px rgba(27,36,51,.05),0 8px 24px -12px rgba(27,36,51,.18)}
+  .tab{white-space:nowrap;padding:.45rem .9rem;border-radius:.6rem;font-size:.85rem;font-weight:600;color:#44546a;background:#dde3ec;transition:all .15s}
+  .tab:hover{background:#cfd8e4}.tab.on{background:#1f3a5f;color:#fff;box-shadow:0 2px 8px -2px rgba(31,58,95,.6)}
+  /* Teclas: tinte suave + borde inferior tipo tecla física */
+  .k{height:2.7rem;border-radius:.65rem;font-weight:700;font-size:.95rem;border:1px solid var(--b);border-bottom-width:3px;background:var(--bg);color:var(--fg);
+     cursor:pointer;transition:transform .08s,filter .15s;user-select:none}
+  .k:hover{filter:brightness(.96)}.k:active{transform:translateY(2px);border-bottom-width:1px}
+  .k.num{--bg:#fff;--fg:#1b2433;--b:#c3ccd8}
+  .k.op{--bg:#fde6b8;--fg:#7a4b00;--b:#e0b25a}
+  .k.fn{--bg:#cfe9e6;--fg:#0b4f4a;--b:#7fc3bb;font-size:.8rem}
+  .k.vr{--bg:#dfe3fb;--fg:#2c3a8c;--b:#a3acec}
+  .k.ct{--bg:#f6d3cc;--fg:#8a2d1f;--b:#df9d8f}
+  .go{background:#1f3a5f;color:#fff;border-radius:.7rem;font-weight:700;padding:.65rem 1.4rem;border-bottom:3px solid #12253d;transition:transform .08s,filter .15s}
+  .go:hover{filter:brightness(1.12)}.go:active{transform:translateY(2px);border-bottom-width:1px}.go:disabled{opacity:.5;cursor:wait}
+  .step{border-left:3px solid #1f3a5f;padding:.2rem 0 .2rem .9rem}
+  .katex-display{margin:.5rem 0;overflow-x:auto;overflow-y:hidden}
+  .ex{font-size:.78rem;color:#1f3a5f;background:#e6ecf5;border-radius:.5rem;padding:.2rem .55rem;cursor:pointer}.ex:hover{background:#d5deec}
+</style>
+</head>
+<body class="bg-[#e9edf2] text-[#1b2433] min-h-screen">
+<div class="max-w-6xl mx-auto p-4 sm:p-6">
+  <header class="flex flex-wrap items-end justify-between gap-2 mb-4">
+    <div>
+      <h1 class="text-2xl font-extrabold text-[#1f3a5f]">Calculadora Universal</h1>
+      <p class="text-sm text-slate-500">Matemáticas, finanzas, economía y administración, con el procedimiento paso a paso.</p>
+    </div>
+    <span id="st" class="text-xs font-semibold px-3 py-1 rounded-full bg-amber-100 text-amber-800">Cargando motor matemático…</span>
+  </header>
+
+  <nav id="tabs" class="flex gap-2 overflow-x-auto pb-2 mb-4"></nav>
+
+  <main class="grid gap-5 lg:grid-cols-[26rem_minmax(0,1fr)] items-start">
+    <section class="space-y-4">
+      <div class="card p-4">
+        <input id="inp" class="mono w-full text-lg rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-[#1f3a5f] focus:ring-2 focus:ring-[#1f3a5f]/20" autocomplete="off" spellcheck="false">
+        <p id="hint" class="text-xs text-slate-500 mt-2"></p>
+        <div id="exs" class="flex flex-wrap gap-2 mt-2"></div>
+        <div class="flex justify-end mt-3"><button id="goBtn" class="go" disabled>Resolver ⏎</button></div>
+      </div>
+      <details id="kp" class="card p-3">
+        <summary class="cursor-pointer text-sm font-semibold text-slate-600 mb-2">Teclado</summary>
+        <div id="keys" class="grid grid-cols-6 gap-1.5"></div>
+      </details>
+    </section>
+    <section id="out" class="space-y-4 min-w-0">
+      <div class="card p-6 text-slate-500 text-sm">Elige una rama, escribe tu problema y pulsa <b>Resolver</b>. La primera carga del motor tarda unos segundos.</div>
+    </section>
+  </main>
+</div>
+
+<script type="text/x-python" id="pysrc">
+import json, re
+from collections import Counter
+import sympy as sp
+from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application, convert_xor
+from sympy.integrals.manualintegrate import integral_steps
+
+TR = standard_transformations + (implicit_multiplication_application, convert_xor)
+x, y, z, t = sp.symbols('x y z t')
+Y = sp.Function('y')(x)
+L = sp.latex
+ENV = {'e': sp.E, 'ln': sp.log, 'log': lambda a, b=10: sp.log(a, b), 'sen': sp.sin, 'tg': sp.tan,
+       'arcsin': sp.asin, 'arccos': sp.acos, 'arctan': sp.atan, 'abs': sp.Abs,
+       'nCr': sp.binomial, 'nPr': lambda a, b: sp.factorial(a) / sp.factorial(a - b), 'Matrix': sp.Matrix}
+S, R, PLOT = [], [], None
+
+def add(txt, m=''): S.append([txt, m])
+
+def P(s, ev=True, extra=None):
+    s = s.strip().replace('π', 'pi').replace('∞', 'oo').replace('×', '*').replace('÷', '/').replace('−', '-')
+    s = s.replace('°', '*pi/180').replace('²', '**2').replace('³', '**3')
+    s = re.sub(r'√\s*(\d+\.?\d*|[A-Za-z]+)', r'sqrt(\1)', s).replace('√', 'sqrt')
+    d = dict(ENV)
+    if extra: d.update(extra)
+    return parse_expr(s, transformations=TR, local_dict=d, evaluate=ev)
+
+def split(s):
+    out, d, cur = [], 0, ''
+    for c in s:
+        if c in '([{': d += 1
+        if c in ')]}': d -= 1
+        if c == ',' and d == 0: out.append(cur); cur = ''
+        else: cur += c
+    out.append(cur)
+    return [o.strip() for o in out if o.strip()]
+
+def var_of(f, a=None):
+    if a: return P(a)
+    fs = sorted(f.free_symbols, key=str)
+    return fs[0] if fs else x
+
+# ---------- Calcular ----------
+def layer(e):
+    if e.is_Atom: return e
+    if all(a.is_Atom for a in e.args): return e.func(*e.args)
+    return e.func(*[layer(a) for a in e.args], evaluate=False)
+
+def m_calc(s):
+    e = P(s, ev=False)
+    add('Expresión', L(e))
+    cur = e
+    try:
+        if not e.free_symbols:
+            for _ in range(8):
+                nxt = layer(cur)
+                if nxt == cur or cur.is_Atom: break
+                add('Resolvemos primero lo más interno (respetando la jerarquía)', L(nxt)); cur = nxt
+    except Exception: pass
+    v = sp.simplify(P(s))
+    R.append(['Resultado exacto', L(v)])
+    if not v.free_symbols and not v.is_Integer:
+        R.append(['Aproximación decimal', L(sp.N(v, 15))])
+
+# ---------- Álgebra ----------
+def m_alg(s):
+    e = P(s); add('Expresión', L(e)); seen = {e}
+    for name, f in (('Simplificada', sp.simplify), ('Expandida', sp.expand), ('Factorizada', sp.factor), ('Fracciones parciales', sp.apart), ('Trigonométrica simplificada', sp.trigsimp)):
+        try: r = f(e)
+        except Exception: continue
+        if r not in seen: seen.add(r); R.append([name, L(r)])
+    if not R: R.append(['La expresión ya está en su forma más simple', L(e)])
+    if e.free_symbols and e.is_polynomial():
+        v = var_of(e); add('Raíces del polinomio', L(sp.roots(sp.Poly(e, v))))
+
+# ---------- Resolver ----------
+def m_solve(s):
+    parts = [p for p in s.split(';') if p.strip()]
+    if len(parts) == 1 and re.search(r'<=|>=|<|>', parts[0]): return ineq(parts[0])
+    eqs = []
+    for p in parts:
+        a, b = p.split('=') if '=' in p else (p, '0')
+        eqs.append(sp.Eq(P(a), P(b)))
+    vs = sorted(set().union(*[q.free_symbols for q in eqs]), key=str)
+    if len(eqs) == 1 and len(vs) == 1:
+        v = vs[0]; q = eqs[0]; f = sp.expand(q.lhs - q.rhs)
+        add('Ecuación', L(q)); add('Pasamos todo a un lado', L(f) + '=0')
+        if f.is_polynomial(v):
+            if sp.degree(f, v) == 2:
+                a, b, c = sp.Poly(f, v).all_coeffs()
+                add('Cuadrática: a = %s, b = %s, c = %s' % (a, b, c))
+                add('Discriminante', r'\Delta=b^2-4ac=' + L(sp.simplify(b**2 - 4*a*c)))
+                add('Fórmula general', r'x=\frac{-b\pm\sqrt{\Delta}}{2a}')
+            fa = sp.factor(f)
+            if fa != f: add('Factorizamos; cada factor igual a cero da una solución', L(fa) + '=0')
+        sols = sp.solve(f, v)
+        if not sols: R.append(['Resultado', r'\text{Sin solución}'])
+        for sv in sols:
+            R.append([L(v) + ' =', L(sv) + ((r'\approx ' + L(sp.N(sv, 8))) if not sv.is_Rational and sv.is_number else '')])
+            add('Comprobación', L(v) + '=' + L(sv) + r'\Rightarrow ' + L(sp.simplify(f.subs(v, sv))) + '=0')
+    else:
+        add('Sistema', r'\begin{cases}' + r'\\'.join(L(q) for q in eqs) + r'\end{cases}')
+        try:
+            A, bb = sp.linear_eq_to_matrix([q.lhs - q.rhs for q in eqs], vs)
+            add('Forma matricial A·x = b', L(A) + L(sp.Matrix(vs)) + '=' + L(-bb))
+            add('Eliminación de Gauss-Jordan sobre [A | b]', L(sp.Matrix.hstack(A, -bb).rref()[0]))
+        except Exception: add('Sistema no lineal: se resuelve por sustitución algebraica')
+        sol = sp.solve(eqs, vs, dict=True)
+        if not sol: R.append(['Resultado', r'\text{Sin solución}'])
+        for d in sol: R.append(['Solución', ',\\;'.join(L(k) + '=' + L(v) for k, v in d.items())])
+
+def ineq(p):
+    rel = P(p); v = var_of(rel)
+    add('Desigualdad', L(rel))
+    add('Puntos críticos (donde la expresión vale 0)', L(sp.solve(sp.Eq(rel.lhs - rel.rhs, 0), v)))
+    R.append(['Solución', L(sp.solve_univariate_inequality(rel, v, relational=False))])
+
+# ---------- Derivar ----------
+def dstep(e, v, dp=0):
+    D = lambda u: r'\frac{d}{d%s}\left(%s\right)' % (L(v), L(u))
+    if dp > 2 or e.is_Atom or not e.has(v):
+        if e.is_Atom and e.has(v): add('Derivada básica', D(e) + '=' + L(sp.diff(e, v)))
+        return
+    if e.is_Add:
+        add('Regla de la suma: derivamos término a término', D(e) + '=' + '+'.join(D(a) for a in e.args))
+        for a in e.args: dstep(a, v, dp + 1)
+    elif e.is_Mul:
+        num, den = sp.fraction(e)
+        c, rest = e.as_independent(v)
+        if c != 1:
+            add('La constante %s sale de la derivada' % L(c), D(e) + '=' + L(c) + r'\cdot' + D(rest)); dstep(rest, v, dp + 1)
+        elif den != 1 and den.has(v):
+            add('Regla del cociente: (u/v)′ = (u′v − uv′)/v²', 'u=' + L(num) + r',\;v=' + L(den) + r'\;\Rightarrow\;\frac{(%s)(%s)-(%s)(%s)}{(%s)^2}' % (L(sp.diff(num, v)), L(den), L(num), L(sp.diff(den, v)), L(den)))
+            dstep(num, v, dp + 1); dstep(den, v, dp + 1)
+        else:
+            u = e.args[0]; w = sp.Mul(*e.args[1:])
+            add('Regla del producto: (u·v)′ = u′v + uv′', 'u=' + L(u) + r',\;v=' + L(w) + r'\;\Rightarrow\;(' + L(sp.diff(u, v)) + r')(' + L(w) + r')+(' + L(u) + r')(' + L(sp.diff(w, v)) + ')')
+            dstep(u, v, dp + 1); dstep(w, v, dp + 1)
+    elif e.is_Pow:
+        b, p = e.args
+        if not p.has(v) and b == v: add('Regla de la potencia: (xⁿ)′ = n·xⁿ⁻¹', D(e) + '=' + L(sp.diff(e, v)))
+        elif not p.has(v):
+            add('Regla de la cadena con potencia: (uⁿ)′ = n·uⁿ⁻¹·u′', 'u=' + L(b) + r'\;\Rightarrow\;' + L(sp.diff(e, v))); dstep(b, v, dp + 1)
+        else: add('Exponencial o potencia general', D(e) + '=' + L(sp.diff(e, v)))
+    else:
+        g = e.args[0]
+        if g == v: add('Derivada de función elemental', D(e) + '=' + L(sp.diff(e, v)))
+        else:
+            add('Regla de la cadena: (f∘g)′ = f′(g)·g′', 'g=' + L(g) + r'\;\Rightarrow\;' + L(sp.diff(e, v))); dstep(g, v, dp + 1)
+
+def m_diff(s):
+    a = split(s); f = P(a[0]); v = var_of(f, a[1] if len(a) > 1 else None); k = int(a[2]) if len(a) > 2 else 1
+    add('Función', 'f=' + L(f))
+    if k == 1: dstep(f, v)
+    else: add('Derivamos %d veces respecto a %s' % (k, v))
+    r = sp.diff(f, v, k)
+    add('Simplificamos', L(sp.simplify(r)))
+    R.append(['Derivada', L(sp.Derivative(f, (v, k))) + '=' + L(sp.simplify(r))])
+
+# ---------- Integrar ----------
+NM = {'ConstantRule': 'Integral de una constante', 'PowerRule': 'Regla de la potencia', 'AddRule': 'Regla de la suma', 'ConstantTimesRule': 'Sacamos la constante',
+      'URule': 'Sustitución', 'PartsRule': 'Integración por partes', 'TrigRule': 'Integral trigonométrica', 'ExpRule': 'Integral exponencial',
+      'ReciprocalRule': 'Integral de 1/x', 'ArctanRule': 'Integral que da arcotangente', 'RewriteRule': 'Reescribimos el integrando',
+      'CyclicPartsRule': 'Partes cíclicas', 'DontKnowRule': 'Sin regla elemental directa'}
+
+def walk(r, dp=0):
+    if dp > 6: return
+    n = type(r).__name__
+    if n == 'AlternativeRule': return walk(r.alternatives[0], dp + 1)
+    ctx = getattr(r, 'context', None); m = ''
+    if ctx is not None: m = r'\int ' + L(ctx) + r'\,d' + L(r.symbol)
+    if n == 'URule': m += r'\;\;\;u=' + L(r.u_func)
+    if n == 'PartsRule': m += r'\;\;\;u=' + L(r.u) + r',\;dv=' + L(r.dv)
+    if n == 'RewriteRule': m += '=' + r'\int ' + L(r.rewritten) + r'\,d' + L(r.symbol)
+    add(NM.get(n, n), m)
+    for at in ('substep', 'v_step', 'second_step'):
+        w = getattr(r, at, None)
+        if w is not None: walk(w, dp + 1)
+    for w in (getattr(r, 'substeps', None) or []): walk(w, dp + 1)
+
+def m_int(s):
+    a = split(s); f = P(a[0]); v = var_of(f, a[1] if len(a) > 1 else None)
+    add('Integral', r'\int ' + L(f) + r'\,d' + L(v))
+    try: walk(integral_steps(f, v))
+    except Exception: add('Se resuelve con el motor simbólico')
+    F = sp.integrate(f, v)
+    if len(a) > 3:
+        lo, hi = P(a[2]), P(a[3])
+        add('Antiderivada F', L(F))
+        add('Teorema fundamental: F(b) − F(a)', L(F.subs(v, hi)) + '-\\left(' + L(F.subs(v, lo)) + r'\right)')
+        val = sp.simplify(F.subs(v, hi) - F.subs(v, lo))
+        R.append(['Integral definida', L(sp.Integral(f, (v, lo, hi))) + '=' + L(val) + (r'\approx ' + L(sp.N(val, 10)) if not val.is_Rational else '')])
+    else:
+        R.append(['Antiderivada', L(F) + '+C'])
+
+# ---------- Límite ----------
+def m_lim(s):
+    a = split(s); f = P(a[0]); lhs, rhs = re.split('->|→', a[1]); v = P(lhs); pt = P(rhs)
+    dr = a[2] if len(a) > 2 and a[2] in '+-' else '+-'
+    add('Límite', L(sp.Limit(f, v, pt, dr)))
+    try: dv = f.subs(v, pt)
+    except Exception: dv = sp.nan
+    if dv.is_finite is True: add('Sustitución directa', L(dv))
+    else:
+        add('La sustitución directa da una forma indeterminada o infinita')
+        sf = sp.simplify(f)
+        if sf != f: add('Simplificamos', L(sf))
+        num, den = sp.fraction(sp.together(f))
+        try:
+            if den != 1 and sp.limit(num, v, pt) == 0 and sp.limit(den, v, pt) == 0:
+                add("Forma 0/0: regla de L'Hôpital", r'\lim\frac{%s}{%s}' % (L(sp.diff(num, v)), L(sp.diff(den, v))))
+        except Exception: pass
+    R.append(['Resultado', L(sp.Limit(f, v, pt, dr)) + '=' + L(sp.limit(f, v, pt, dr))])
+
+# ---------- Series de Taylor ----------
+def m_ser(s):
+    a = split(s); f = P(a[0]); v = var_of(f, a[1] if len(a) > 1 else None)
+    p = P(a[2]) if len(a) > 2 else sp.Integer(0); N = int(a[3]) if len(a) > 3 else 6
+    add('Fórmula de Taylor', r'f(x)=\sum_{k\ge0}\frac{f^{(k)}(a)}{k!}(x-a)^k')
+    for k in range(min(N, 6)):
+        add('Término k = %d' % k, r'\frac{f^{(%d)}(%s)}{%d!}=%s' % (k, L(p), k, L(sp.simplify(sp.diff(f, v, k).subs(v, p) / sp.factorial(k)))))
+    R.append(['Serie', L(sp.series(f, v, p, N))])
+
+# ---------- Ecuaciones diferenciales ----------
+def m_ode(s):
+    s = s.replace("y''", 'DD').replace("y'", 'D1')
+    a, b = s.split('=') if '=' in s else (s, '0')
+    env = {'DD': sp.Derivative(Y, (x, 2)), 'D1': sp.Derivative(Y, x), 'y': Y}
+    eq = sp.Eq(P(a, extra=env), P(b, extra=env))
+    add('Ecuación diferencial', L(eq))
+    try: add('Tipo (pistas de clasificación): ' + ', '.join(sp.classify_ode(eq, Y)[:3]))
+    except Exception: pass
+    R.append(['Solución general', L(sp.dsolve(eq, Y))])
+
+# ---------- Matrices ----------
+def m_mat(s):
+    M = P(s.replace('[[', 'Matrix([[').replace(']]', ']])'))
+    if not isinstance(M, sp.MatrixBase): R.append(['Resultado', L(M)]); return
+    add('Matriz', L(M)); R.append(['Resultado', L(M)])
+    R.append(['Transpuesta', L(M.T)]); R.append(['Rango', str(M.rank())])
+    if M.is_square:
+        n = M.shape[0]; d = M.det()
+        if n == 2: add('Determinante 2×2: ad − bc', r'%s\cdot%s-%s\cdot%s=%s' % (L(M[0, 0]), L(M[1, 1]), L(M[0, 1]), L(M[1, 0]), L(d)))
+        else: add('Determinante por cofactores (1.ª fila)', '+'.join(r'\left(%s\right)\left(%s\right)' % (L(M[0, j]), L(M.cofactor(0, j))) for j in range(n)) + '=' + L(d))
+        R.append(['Determinante', L(d)]); R.append(['Traza', L(M.trace())])
+        if d != 0:
+            add('Inversa = adj(A) / det(A)', L(M.adjugate()) + r'\Big/\,' + L(d)); R.append(['Inversa', L(M.inv())])
+        try:
+            lam = sp.Symbol('lambda')
+            add('Polinomio característico det(A − λI)', L(sp.factor((M - lam * sp.eye(n)).det())) + '=0')
+            R.append(['Autovalores', ',\\;'.join(L(k) + r'\;(\times%d)' % v for k, v in M.eigenvals().items())])
+        except Exception: pass
+
+# ---------- Teoría de números ----------
+def m_num(s):
+    a = [int(P(q)) for q in split(s)]
+    if len(a) == 1:
+        n = a[0]; m = n; p = 2
+        add('Dividimos entre primos sucesivos', '')
+        while n < 10**12 and p * p <= m:
+            while m % p == 0: add('%d ÷ %d = %d' % (m, p, m // p)); m //= p
+            p += 1
+        if 1 < m < n: add('%d es primo' % m)
+        f = sp.factorint(n)
+        R.append(['Factorización', L(n) + '=' + r'\cdot '.join(L(sp.Pow(k, v, evaluate=False)) for k, v in f.items())])
+        R.append(['¿Es primo?', 'Sí' if sp.isprime(n) else 'No'])
+        if n < 10**7: R.append(['Divisores', L(sp.divisors(n))])
+        R.append(['φ de Euler', str(sp.totient(n))])
+    else:
+        p, q = a[0], a[1]; g0, l0 = p, q
+        add('Algoritmo de Euclides')
+        while q:
+            add('%d = %d·%d + %d' % (p, p // q, q, p % q)); p, q = q, p % q
+        R.append(['mcd', str(p)]); R.append(['mcm', str(abs(g0 * l0) // p)])
+
+# ---------- Estadística ----------
+def m_stat(s):
+    global R
+    d = [P(q) for q in split(s)]; N = len(d)
+    add('Datos', L(d))
+    sm = sum(d); mu = sp.nsimplify(sm / N)
+    add('Media = Σx / n', L(sm) + '/' + str(N) + '=' + L(mu))
+    ss = sp.simplify(sum((v - mu)**2 for v in d)); add('Suma de cuadrados Σ(xᵢ − x̄)²', L(ss))
+    sd = sorted(d); med = sd[N // 2] if N % 2 else (sd[N // 2 - 1] + sd[N // 2]) / 2
+    c = Counter(d).most_common(); mx = [k for k, v in c if v == c[0][1]]
+    R += [['Media', L(mu)], ['Mediana', L(med)], ['Moda', L(mx) if c[0][1] > 1 else r'\text{sin moda}'], ['Mínimo / Máximo', L(sd[0]) + r'\;/\;' + L(sd[-1])],
+          ['Varianza poblacional', L(sp.simplify(ss / N))], ['Desviación estándar poblacional', L(sp.sqrt(ss / N)) + r'\approx ' + L(sp.N(sp.sqrt(ss / N), 8))]]
+    if N > 1: R += [['Varianza muestral', L(sp.simplify(ss / (N - 1)))], ['Desviación estándar muestral', L(sp.sqrt(ss / (N - 1))) + r'\approx ' + L(sp.N(sp.sqrt(ss / (N - 1)), 8))]]
+
+# ---------- Gráfica ----------
+def m_plot(s):
+    global PLOT
+    lo, hi = -10.0, 10.0
+    r = re.search(r'\[\s*([-\d.eE]+)\s*,\s*([-\d.eE]+)\s*\]\s*$', s)
+    if r: lo, hi = float(r.group(1)), float(r.group(2)); s = s[:r.start()]
+    cs = []
+    for i, fs in enumerate(q for q in s.split(';') if q.strip()):
+        f = P(fs); fn = sp.lambdify(x, f, 'math'); pts = []
+        for k in range(601):
+            xv = lo + (hi - lo) * k / 600
+            try:
+                yv = float(fn(xv)); pts.append([xv, yv if yv == yv and abs(yv) < 1e6 else None])
+            except Exception: pts.append([xv, None])
+        cs.append({'l': fs.strip(), 'p': pts}); add('f%d(x)' % (i + 1), L(f))
+    PLOT = {'lo': lo, 'hi': hi, 'c': cs}
+
+# ================= FINANZAS, ECONOMÍA Y NEGOCIOS =================
+import math
+def mo(v): return '{:,.2f}'.format(float(v)).replace(',', r'\,')
+def g(v): return '%.6g' % float(v)
+def pc(v, k=4): return ('%.' + str(k) + 'f') % (float(v) * 100) + r'\%'
+def tbl(h, rows):
+    return r'\begin{array}{' + 'r' * len(h) + '}' + '&'.join(r'\text{%s}' % t for t in h) + r'\\\hline ' + r'\\'.join('&'.join(r) for r in rows) + r'\end{array}'
+def kv(s):
+    cmd, _, rest = s.partition(':'); d = {}
+    for it in split(rest):
+        k, _, v = it.partition('='); k = k.strip().lower(); v = v.strip()
+        if v.endswith('%'): d[k] = P(v[:-1]) / 100
+        elif v.startswith('['): d[k] = [P(q) for q in split(v[1:-1])]
+        else: d[k] = P(v)
+    return cmd.strip().lower(), d
+def need(d, *ks):
+    for k in ks:
+        if k not in d: raise ValueError('falta el dato "%s"' % k)
+def nums(d, *ks):
+    need(d, *ks); return [float(d[k]) for k in ks]
+
+# ---- Finanzas ----
+def f_vf(d):
+    global R
+    c, i, n = nums(d, 'c', 'i', 'n'); r = c * (1 + i) ** n
+    add('Monto compuesto', r'F=C(1+i)^n'); add('Sustituimos', r'F=%s\,(1+%s)^{%s}' % (mo(c), g(i), g(n)))
+    R += [['Valor futuro', 'F=' + mo(r)], ['Interés ganado', mo(r - c)]]
+def f_vp(d):
+    f, i, n = nums(d, 'f', 'i', 'n'); r = f / (1 + i) ** n
+    add('Valor presente', r'C=\frac{F}{(1+i)^n}'); add('Sustituimos', r'C=\frac{%s}{(1+%s)^{%s}}' % (mo(f), g(i), g(n)))
+    R.append(['Valor presente', 'C=' + mo(r)])
+def f_simple(d):
+    global R
+    c, i, n = nums(d, 'c', 'i', 'n'); I = c * i * n
+    add('Interés simple', r'I=C\,i\,n'); add('Sustituimos', r'I=%s\cdot%s\cdot%s' % (mo(c), g(i), g(n)))
+    R += [['Interés', mo(I)], ['Monto', 'M=' + mo(c + I)]]
+def f_n(d):
+    c, f, i = nums(d, 'c', 'f', 'i')
+    add('Despejamos n', r'n=\frac{\ln(F/C)}{\ln(1+i)}'); R.append(['Periodos', 'n=' + g(math.log(f / c) / math.log(1 + i))])
+def f_i(d):
+    c, f, n = nums(d, 'c', 'f', 'n')
+    add('Despejamos i', r'i=\left(\frac{F}{C}\right)^{1/n}-1'); R.append(['Tasa por periodo', 'i=' + pc((f / c) ** (1 / n) - 1)])
+def f_ea(d):
+    global R
+    j, m = nums(d, 'j', 'm'); ip = j / m; ea = (1 + ip) ** m - 1
+    add('Tasa por periodo', r'i_p=\frac{j}{m}=' + pc(ip)); add('Efectiva anual', r'EA=(1+i_p)^m-1=' + pc(ea))
+    R += [['Tasa periódica', pc(ip)], ['Tasa efectiva anual (EA)', pc(ea)]]
+def f_nom(d):
+    global R
+    ea, m = nums(d, 'ea', 'm'); ip = (1 + ea) ** (1 / m) - 1
+    add('Tasa periódica equivalente', r'i_p=(1+EA)^{1/m}-1=' + pc(ip)); R += [['Tasa periódica', pc(ip)], ['Nominal anual (j)', pc(ip * m)]]
+def f_cuota(d):
+    global R
+    vp, i, n = nums(d, 'vp', 'i', 'n'); a = vp * i / (1 - (1 + i) ** -n)
+    add('Cuota de anualidad vencida', r'A=\frac{VP\cdot i}{1-(1+i)^{-n}}'); add('Sustituimos', r'A=\frac{%s\cdot%s}{1-(1+%s)^{-%s}}' % (mo(vp), g(i), g(i), g(n)))
+    R += [['Cuota periódica', 'A=' + mo(a)], ['Total pagado', mo(a * n)], ['Intereses totales', mo(a * n - vp)]]
+def f_vfa(d):
+    a, i, n = nums(d, 'a', 'i', 'n'); add('Valor futuro de una anualidad', r'VF=A\,\frac{(1+i)^n-1}{i}'); R.append(['Valor futuro', mo(a * ((1 + i) ** n - 1) / i)])
+def f_vpa(d):
+    a, i, n = nums(d, 'a', 'i', 'n'); add('Valor presente de una anualidad', r'VP=A\,\frac{1-(1+i)^{-n}}{i}'); R.append(['Valor presente', mo(a * (1 - (1 + i) ** -n) / i)])
+def f_amort(d):
+    global R
+    vp, i, n = nums(d, 'vp', 'i', 'n'); n = int(n); al = str(d.get('sis', 'f')) == 'a'
+    a = vp * i / (1 - (1 + i) ** -n); s = vp; rows = []; tot = 0
+    for k in range(1, n + 1):
+        it = s * i; ab = vp / n if al else a - it; s -= ab; tot += it
+        rows.append([str(k), mo(it + ab), mo(it), mo(ab), mo(max(s, 0))])
+    add('Sistema alemán (abono constante)' if al else 'Sistema francés (cuota constante)', r'\text{Interés}_k=\text{Saldo}_{k-1}\cdot i\;;\;\;\text{Abono}_k=\text{Cuota}-\text{Interés}_k')
+    R += [['Tabla de amortización', tbl(['k', 'Cuota', 'Interés', 'Abono', 'Saldo'], rows[:60])], ['Intereses totales', mo(tot)]]
+def f_van(d):
+    global R
+    need(d, 'i', 'flujos'); i = float(d['i']); fl = [float(v) for v in d['flujos']]; tot = 0
+    for k, v in enumerate(fl):
+        pv = v / (1 + i) ** k; tot += pv; add('Periodo %d: se descuenta el flujo' % k, r'\frac{%s}{(1+%s)^{%d}}=%s' % (mo(v), g(i), k, mo(pv)))
+    R += [['VAN', 'VAN=' + mo(tot)], ['Decisión', r'\text{%s}' % ('Aceptar (VAN positivo)' if tot > 0 else 'Rechazar (VAN no positivo)')]]
+    if fl[0] < 0: R.append(['Índice de rentabilidad', g((tot - fl[0]) / -fl[0])])
+def f_tir(d):
+    need(d, 'flujos'); fl = [float(v) for v in d['flujos']]; npv = lambda r: sum(v / (1 + r) ** k for k, v in enumerate(fl))
+    lo, hi = -0.99, 10.0
+    if npv(lo) * npv(hi) > 0: raise ValueError('no hay TIR en el rango [-99%, 1000%]')
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if npv(lo) * npv(mid) <= 0: hi = mid
+        else: lo = mid
+    add('La TIR es la tasa r que hace VAN = 0', r'\sum_k\frac{F_k}{(1+r)^k}=0'); add('Bisección numérica', 'r=' + pc(mid)); R.append(['TIR', pc(mid)])
+def f_pay(d):
+    need(d, 'flujos'); fl = [float(v) for v in d['flujos']]; acc = 0; rows = []; pb = None
+    for k, v in enumerate(fl):
+        prev = acc; acc += v; rows.append([str(k), mo(v), mo(acc)])
+        if pb is None and k > 0 and acc >= 0: pb = k - 1 + (-prev) / v
+    add('Flujo acumulado', tbl(['Periodo', 'Flujo', 'Acumulado'], rows))
+    R.append(['Periodo de recuperación', r'\text{%.2f periodos}' % pb if pb is not None else r'\text{No se recupera}'])
+def f_dep(d):
+    c, r, n = nums(d, 'costo', 'residuo', 'vida'); n = int(n); a = (c - r) / n; rows = []; acc = 0
+    add('Línea recta', r'D=\frac{C-R}{n}=\frac{%s-%s}{%d}=%s' % (mo(c), mo(r), n, mo(a)))
+    for k in range(1, n + 1): acc += a; rows.append([str(k), mo(a), mo(acc), mo(c - acc)])
+    R.append(['Depreciación en línea recta', tbl(['Año', 'Dep.', 'Acum.', 'Valor en libros'], rows)])
+    add('Suma de dígitos de los años', r'D_k=(C-R)\,\frac{n-k+1}{n(n+1)/2}'); rows = []; acc = 0
+    for k in range(1, n + 1): dk = (c - r) * (n - k + 1) / (n * (n + 1) / 2); acc += dk; rows.append([str(k), mo(dk), mo(acc), mo(c - acc)])
+    R.append(['Depreciación por suma de dígitos', tbl(['Año', 'Dep.', 'Acum.', 'Valor en libros'], rows)])
+
+# ---- Economía (usa P para el precio y q para la cantidad) ----
+def e_eq(d):
+    global R
+    need(d, 'd', 'o'); Pp = sp.Symbol('P'); qq = sp.Symbol('q'); qd, qs = d['d'], d['o']
+    add('Condición de equilibrio', r'Q_d=Q_s'); add('Igualamos oferta y demanda', L(qd) + '=' + L(qs))
+    ps = sp.solve(sp.Eq(qd, qs), Pp)[0]; qe = sp.simplify(qd.subs(Pp, ps))
+    add('Precio de equilibrio', 'P^*=' + L(ps)); add('Cantidad de equilibrio', 'Q^*=' + L(qe))
+    R += [['Precio de equilibrio', 'P^*=' + L(ps)], ['Cantidad de equilibrio', 'Q^*=' + L(qe)]]
+    try:
+        pd_ = sp.solve(sp.Eq(qq, qd), Pp)[0]; po_ = sp.solve(sp.Eq(qq, qs), Pp)[0]
+        add('Excedentes: áreas bajo la demanda y sobre la oferta', r'EC=\int_0^{Q^*}(P_d-P^*)\,dq,\quad EP=\int_0^{Q^*}(P^*-P_o)\,dq')
+        R += [['Excedente del consumidor', L(sp.simplify(sp.integrate(pd_ - ps, (qq, 0, qe))))], ['Excedente del productor', L(sp.simplify(sp.integrate(ps - po_, (qq, 0, qe))))]]
+    except Exception: pass
+def e_ep(d):
+    global R
+    need(d, 'd', 'p'); Pp = sp.Symbol('P'); qd, p0 = d['d'], d['p']; q0 = qd.subs(Pp, p0); dq = sp.diff(qd, Pp); e = sp.simplify(dq.subs(Pp, p0) * p0 / q0)
+    add('Elasticidad punto', r'E=\frac{dQ}{dP}\cdot\frac{P}{Q}'); add('Derivada de la demanda', r'\frac{dQ}{dP}=' + L(dq)); add('Cantidad demandada en P = %s' % p0, 'Q=' + L(q0))
+    add('Sustituimos', 'E=' + L(dq) + r'\cdot\frac{%s}{%s}=%s' % (L(p0), L(q0), L(e)))
+    a = abs(float(e)); R += [['Elasticidad precio de la demanda', 'E=' + L(e) + r'\approx ' + g(e)], ['Clasificación', r'\text{%s}' % ('Elástica: el ingreso baja si sube el precio' if a > 1 else 'Inelástica: el ingreso sube si sube el precio' if a < 1 else 'Elasticidad unitaria')]]
+def e_arco(d):
+    p1, q1, p2, q2 = nums(d, 'p1', 'q1', 'p2', 'q2'); e = ((q2 - q1) / ((q1 + q2) / 2)) / ((p2 - p1) / ((p1 + p2) / 2))
+    add('Elasticidad arco (punto medio)', r'E=\frac{\Delta Q/\bar Q}{\Delta P/\bar P}'); R.append(['Elasticidad arco', 'E=' + g(e)])
+def e_cost(d):
+    global R
+    need(d, 'ct'); q = sp.Symbol('q'); ct = d['ct']; cf = ct.subs(q, 0); cmg = sp.diff(ct, q); cme = sp.simplify(ct / q)
+    add('Costo fijo (q = 0)', 'CF=' + L(cf)); add('Costo variable', 'CV=' + L(sp.simplify(ct - cf))); add('Costo medio', r'CMe=\frac{CT}{q}=' + L(cme)); add('Costo marginal', r'CMg=\frac{dCT}{dq}=' + L(cmg))
+    R += [['Costo fijo', L(cf)], ['Costo medio', L(cme)], ['Costo marginal', L(cmg)]]
+    m = [s for s in sp.solve(sp.Eq(cmg, cme), q) if s.is_real and s > 0]
+    if m: R.append(['Mínimo costo medio (CMg = CMe)', 'q=' + L(m[0]) + r',\;CMe=' + L(sp.simplify(cme.subs(q, m[0])))])
+def e_ben(d):
+    global R
+    need(d, 'it', 'ct'); q = sp.Symbol('q'); B = sp.expand(d['it'] - d['ct']); db = sp.diff(B, q)
+    add('Beneficio', 'B=IT-CT=' + L(B)); add('Primer orden: IMg = CMg', "B'=" + L(db) + '=0')
+    ss = [s for s in sp.solve(db, q) if s.is_real and s > 0]
+    if not ss: raise ValueError('no hay máximo con q > 0')
+    s = ss[0]; add('Segundo orden', "B''=" + L(sp.diff(B, q, 2)) + (r'<0\Rightarrow\text{máximo}' if sp.diff(B, q, 2).subs(q, s) < 0 else r'\ge0'))
+    R += [['Cantidad óptima', 'q^*=' + L(s)], ['Beneficio máximo', 'B^*=' + L(sp.simplify(B.subs(q, s)))]]
+def e_crec(d):
+    x0, x1, n = nums(d, 'x0', 'x1', 'n'); add('Tasa de crecimiento compuesta', r'g=\left(\frac{x_1}{x_0}\right)^{1/n}-1'); R.append(['Crecimiento por periodo', pc((x1 / x0) ** (1 / n) - 1, 3)])
+def e_infl(d):
+    p0, p1 = nums(d, 'p0', 'p1'); add('Inflación', r'\pi=\frac{P_1-P_0}{P_0}'); R.append(['Inflación', pc(p1 / p0 - 1, 3)])
+def e_real(d):
+    global R
+    nm, inf = nums(d, 'nom', 'inf'); add('Ecuación de Fisher', r'r=\frac{1+i}{1+\pi}-1'); R += [['Tasa real exacta', pc((1 + nm) / (1 + inf) - 1, 3)], ['Aproximación i − π', pc(nm - inf, 3)]]
+def e_mult(d):
+    c = float(d['pmc']); t = float(d.get('t', 0)); add('Multiplicador keynesiano', r'k=\frac{1}{1-c(1-t)}'); R.append(['Multiplicador', 'k=' + g(1 / (1 - c * (1 - t)))])
+def e_util(d):
+    global R
+    need(d, 'u', 'px', 'py', 'm'); lam = sp.Symbol('lambda'); u = d['u']; Lg = u + lam * (d['m'] - d['px'] * x - d['py'] * y)
+    add('Lagrangiano', r'\mathcal{L}=' + L(Lg)); eqs = [sp.diff(Lg, v) for v in (x, y, lam)]
+    add('Condiciones de primer orden', r'\begin{cases}' + r'\\'.join(L(e) + '=0' for e in eqs) + r'\end{cases}')
+    sol = [s for s in sp.solve(eqs, [x, y, lam], dict=True) if all(s[v].is_real and s[v] > 0 for v in (x, y))]
+    if not sol: raise ValueError('sin canasta óptima positiva')
+    s = sol[0]; R += [['Canasta óptima', 'x^*=' + L(sp.simplify(s[x])) + r',\;y^*=' + L(sp.simplify(s[y]))], ['Utilidad máxima', L(sp.simplify(u.subs(s)))], ['TMS = px / py', L(sp.simplify(d['px'] / d['py']))]]
+
+# ---- Negocios y administración ----
+def n_pe(d):
+    global R
+    cf, p, cv = nums(d, 'cf', 'p', 'cv'); u = float(d.get('u', 0)); mc = p - cv
+    if mc <= 0: raise ValueError('el precio debe superar el costo variable')
+    q = (cf + u) / mc
+    add('Margen de contribución unitario', r'MC=p-c_v=%s-%s=%s' % (g(p), g(cv), g(mc))); add('Punto de equilibrio', r'Q=\frac{CF+U}{MC}=\frac{%s+%s}{%s}=%s' % (g(cf), g(u), g(mc), g(q)))
+    R += [['Unidades de equilibrio', r'\text{%d unidades}' % math.ceil(q)], ['Ventas de equilibrio', mo(q * p)], ['Razón de margen de contribución', pc(mc / p, 2)]]
+def n_roi(d):
+    ga, inv = nums(d, 'gan', 'inv'); add('Retorno sobre la inversión', r'ROI=\frac{\text{Ganancia}}{\text{Inversión}}'); R.append(['ROI', pc(ga / inv, 2)])
+def n_mar(d):
+    global R
+    c, p = nums(d, 'costo', 'precio'); add('Margen y markup', r'\text{Margen}=\frac{P-C}{P},\quad\text{Markup}=\frac{P-C}{C}')
+    R += [['Utilidad unitaria', mo(p - c)], ['Margen sobre precio', pc((p - c) / p, 2)], ['Markup sobre costo', pc((p - c) / c, 2)]]
+def n_iva(d):
+    global R
+    t = float(d.get('tasa', 0.19))
+    if 'base' in d: b = float(d['base']); R += [['IVA', mo(b * t)], ['Total con IVA', mo(b * (1 + t))]]
+    else: tot = float(d['total']); b = tot / (1 + t); R += [['Base sin IVA', mo(b)], ['IVA', mo(tot - b)]]
+    add('IVA (por defecto 19 %)', r'\text{Total}=\text{Base}\,(1+t)')
+def n_desc(d):
+    global R
+    p, dd = nums(d, 'precio', 'd'); add('Descuento', r'P_f=P(1-d)'); R += [['Ahorro', mo(p * dd)], ['Precio final', mo(p * (1 - dd))]]
+def n_eoq(d):
+    global R
+    D, S_, H = nums(d, 'd', 's', 'h'); q = math.sqrt(2 * D * S_ / H)
+    add('Lote económico (EOQ)', r'Q^*=\sqrt{\frac{2DS}{H}}=\sqrt{\frac{2\cdot%s\cdot%s}{%s}}=%s' % (g(D), g(S_), g(H), g(q)))
+    R += [['Lote económico Q*', g(q)], ['Pedidos por año', g(D / q)], ['Costo anual de inventario', mo(q / 2 * H + D / q * S_)]]
+def n_rop(d):
+    dm, l = nums(d, 'd', 'l'); ss = float(d.get('ss', 0)); add('Punto de reorden', r'ROP=d\cdot L+SS'); R.append(['Punto de reorden', g(dm * l + ss)])
+def n_raz(d):
+    v = lambda k: float(d[k]); has = lambda *k: all(a in d for a in k)
+    if has('ac', 'pc'): R.append(['Razón corriente = AC / PC', g(v('ac') / v('pc'))])
+    if has('ac', 'inv', 'pc'): R.append(['Prueba ácida = (AC − Inv) / PC', g((v('ac') - v('inv')) / v('pc'))])
+    if has('pasivo', 'activo'): R.append(['Endeudamiento = Pasivo / Activo', pc(v('pasivo') / v('activo'), 2)])
+    if has('un', 'patr'): R.append(['ROE = UN / Patrimonio', pc(v('un') / v('patr'), 2)])
+    if has('un', 'activo'): R.append(['ROA = UN / Activo', pc(v('un') / v('activo'), 2)])
+    if has('un', 'ventas'): R.append(['Margen neto = UN / Ventas', pc(v('un') / v('ventas'), 2)])
+    if has('ventas', 'activo'): R.append(['Rotación del activo = Ventas / Activo', g(v('ventas') / v('activo'))])
+    if not R: raise ValueError('faltan datos: ac, pc, inv, pasivo, activo, patr, un, ventas')
+    add('Se calculan las razones para las que hay datos', r'\text{liquidez, endeudamiento y rentabilidad}')
+def n_reg(d):
+    global R
+    need(d, 'x', 'y'); X = [float(v) for v in d['x']]; Yv = [float(v) for v in d['y']]; n = len(X); mx, my = sum(X) / n, sum(Yv) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(X, Yv)); sxx = sum((a - mx) ** 2 for a in X); syy = sum((b - my) ** 2 for b in Yv); b = sxy / sxx; a = my - b * mx; r = sxy / math.sqrt(sxx * syy)
+    add('Medias', r'\bar x=%s,\;\bar y=%s' % (g(mx), g(my))); add('Sumas de productos y cuadrados', r'S_{xy}=%s,\;S_{xx}=%s' % (g(sxy), g(sxx)))
+    add('Pendiente y ordenada', r'b=\frac{S_{xy}}{S_{xx}}=%s,\;a=\bar y-b\bar x=%s' % (g(b), g(a)))
+    R += [['Recta de regresión', r'\hat y=%s+%s\,x' % (g(a), g(b))], ['Correlación r', g(r)], ['Determinación R²', g(r * r)]]
+    if 'xp' in d: R.append(['Pronóstico', r'\hat y(%s)=%s' % (g(d['xp']), g(a + b * float(d['xp'])))])
+def n_mov(d):
+    need(d, 'd', 'k'); s = [float(v) for v in d['d']]; k = int(d['k'])
+    add('Promedio móvil de %d periodos' % k, tbl(['Periodo', 'Promedio'], [[str(i + 1), g(sum(s[i - k + 1:i + 1]) / k)] for i in range(k - 1, len(s))]))
+    R.append(['Pronóstico del siguiente periodo', g(sum(s[-k:]) / k)])
+
+FIN = {'vf': f_vf, 'vp': f_vp, 'simple': f_simple, 'n': f_n, 'i': f_i, 'ea': f_ea, 'nom': f_nom, 'cuota': f_cuota, 'vfa': f_vfa, 'vpa': f_vpa, 'amort': f_amort, 'van': f_van, 'tir': f_tir, 'payback': f_pay, 'dep': f_dep}
+ECO = {'equilibrio': e_eq, 'elasticidad': e_ep, 'arco': e_arco, 'costos': e_cost, 'beneficio': e_ben, 'crec': e_crec, 'infl': e_infl, 'real': e_real, 'mult': e_mult, 'util': e_util}
+NEG = {'pe': n_pe, 'roi': n_roi, 'margen': n_mar, 'iva': n_iva, 'desc': n_desc, 'eoq': n_eoq, 'rop': n_rop, 'razones': n_raz, 'reg': n_reg, 'movil': n_mov}
+def disp(T, s):
+    cmd, d = kv(s)
+    if cmd not in T: raise ValueError('comando "%s" desconocido. Disponibles: %s' % (cmd, ', '.join(T)))
+    T[cmd](d)
+def m_fin(s): disp(FIN, s)
+def m_eco(s): disp(ECO, s)
+def m_neg(s): disp(NEG, s)
+
+def run(mode, text):
+    global S, R, PLOT
+    S, R, PLOT = [], [], None
+    try:
+        globals()['m_' + mode](text)
+        return json.dumps({'r': R, 's': S, 'p': PLOT})
+    except Exception as ex:
+        return json.dumps({'err': 'No se pudo resolver: revisa la sintaxis. (' + str(ex)[:140] + ')'})
+</script>
+
+<script>
+const $ = id => document.getElementById(id);
+const MODES = [
+  ['calc','Calcular','(3/4 + 5/6) * 2','Aritmética exacta y decimal. Usa ° para grados: sin(30°). También nCr(5,2), √2, 2^10.',['(3/4 + 5/6) * 2','sin(30°) + cos(60°)','nCr(10,3)']],
+  ['alg','Álgebra','(x+1)^3 - (x-1)^3','Simplifica, expande, factoriza y descompone en fracciones parciales.',['(x+1)^3 - (x-1)^3','x^4 - 1','(x^2+1)/(x*(x+1))']],
+  ['solve','Resolver','x^2 - 5x + 6 = 0','Ecuaciones, sistemas (separa con ;) e inecuaciones (<, >, <=, >=).',['x^2 - 5x + 6 = 0','x + y = 5; x - y = 1','x^2 - 4 < 0']],
+  ['diff','Derivar','x^2 sin(x), x','función, variable y orden (opcionales): f, x, n',['x^2 sin(x), x','(x^2+1)/(x-1)','ln(x^2+1), x, 2']],
+  ['int','Integrar','x e^x, x','función, variable y límites (opcionales): f, x, a, b',['x e^x, x','sin(x)^2, x, 0, pi','1/(x^2+1), x, 0, 1']],
+  ['lim','Límite','sin(x)/x, x->0','función, x->punto y dirección opcional (+ o −)',['sin(x)/x, x->0','(1+1/x)^x, x->oo','(x^2-1)/(x-1), x->1']],
+  ['ser','Serie','e^x, x, 0, 6','Taylor: función, variable, centro, nº de términos',['e^x, x, 0, 6','sin(x), x, 0, 8','ln(1+x), x, 0, 5']],
+  ['ode','EDO','y\'\' + y = 0','Ecuaciones diferenciales con y, y\', y\'\' en función de x',['y\'\' + y = 0','y\' = 2*x*y','y\' + y = x']],
+  ['mat','Matriz','[[1,2],[3,4]]','Matriz o expresión con matrices: [[1,2],[3,4]]*[[0,1],[1,0]]',['[[1,2],[3,4]]','[[2,0,1],[1,3,2],[1,1,1]]','[[1,2],[3,4]]*[[0,1],[1,0]]']],
+  ['num','Números','360','Un entero: factorización. Dos enteros (a, b): mcd y mcm con Euclides.',['360','84, 36','97']],
+  ['stat','Estadística','4, 8, 15, 16, 23, 42','Lista de datos separados por comas',['4, 8, 15, 16, 23, 42','2, 3, 3, 5, 7']],
+  ['plot','Gráfica','sin(x); x^2/10 [-6.28, 6.28]','Una o varias funciones separadas por ; y rango opcional [xmin, xmax]',['sin(x); x^2/10 [-6.28, 6.28]','x^3 - 3x [-3, 3]','1/x; tan(x) [-6, 6]']],
+  ['fin','Finanzas','vf: c=1000000, i=2%, n=12','Formato  comando: dato=valor, …  Comandos: vf, vp, simple, n, i, ea, nom, cuota, vfa, vpa, amort (sis=f francés / a alemán), van, tir, payback, dep. Las tasas se escriben con %.',['vf: c=1000000, i=2%, n=12','cuota: vp=20000000, i=1.5%, n=36','amort: vp=5000000, i=2%, n=6','van: i=10%, flujos=[-1000, 300, 400, 500]','tir: flujos=[-1000, 300, 400, 500]','ea: j=24%, m=12','dep: costo=10000, residuo=1000, vida=5']],
+  ['eco','Economía','equilibrio: d=100-2*P, o=-20+4*P','Comandos: equilibrio, elasticidad, arco, costos, beneficio, crec, infl, real, mult, util. Usa P para el precio y q para la cantidad.',['equilibrio: d=100-2*P, o=-20+4*P','elasticidad: d=100-2*P, p=20','arco: p1=10, q1=80, p2=12, q2=70','costos: ct=1000+5*q+0.1*q^2','beneficio: it=50*q, ct=1000+5*q+0.1*q^2','util: u=x^(1/2)*y^(1/2), px=2, py=4, m=100','crec: x0=100, x1=150, n=5','mult: pmc=0.8']],
+  ['neg','Negocios','pe: cf=5000, p=25, cv=15','Comandos: pe, roi, margen, iva (19 % por defecto), desc, eoq, rop, razones, reg, movil.',['pe: cf=5000, p=25, cv=15','eoq: d=1200, s=50, h=2','reg: x=[1,2,3,4,5], y=[2.1,3.9,6.2,7.8,10.1], xp=6','movil: d=[10,12,13,12,15,16], k=3','razones: ac=500, pc=300, inv=120, pasivo=400, activo=1000, patr=600, un=90, ventas=1500','iva: base=100000, tasa=19%','roi: gan=30000, inv=200000','margen: costo=60, precio=100']]
+];
+const KEYS = [
+ ['7','7','num'],['8','8','num'],['9','9','num'],['÷','/','op'],['(','(','vr'],[')',')','vr'],
+ ['4','4','num'],['5','5','num'],['6','6','num'],['×','*','op'],['x','x','vr'],['y','y','vr'],
+ ['1','1','num'],['2','2','num'],['3','3','num'],['−','-','op'],['π','π','vr'],['e','e','vr'],
+ ['0','0','num'],['.','.','num'],['^','^','op'],['+','+','op'],['√','√(','fn'],[',',', ','vr'],
+ ['sin','sin(','fn'],['cos','cos(','fn'],['tan','tan(','fn'],['ln','ln(','fn'],['log','log(','fn'],['abs','abs(','fn'],
+ ['asin','asin(','fn'],['acos','acos(','fn'],['atan','atan(','fn'],['∞','∞','vr'],['⌫','@bs','ct'],['AC','@ac','ct'],
+ ['%','%','vr'],['=','=','vr'],[':',': ','vr'],['[','[','vr'],[']',']','vr'],['P','P','vr']
+];
+let mode = 'calc', py = null, ready = false; const hist = [];
+const inp = $('inp');
+
+KEYS.forEach(([l, v, c]) => {
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = l; b.className = 'k ' + c;
+  b.onclick = () => {
+    if (v === '@ac') inp.value = '';
+    else if (v === '@bs'){ const p = inp.selectionStart; if (p > 0){ inp.value = inp.value.slice(0, p - 1) + inp.value.slice(inp.selectionEnd); inp.setSelectionRange(p - 1, p - 1); } }
+    else { const p = inp.selectionStart; inp.value = inp.value.slice(0, p) + v + inp.value.slice(inp.selectionEnd); inp.setSelectionRange(p + v.length, p + v.length); }
+    inp.focus();
+  };
+  $('keys').appendChild(b);
+});
+$('kp').open = matchMedia('(min-width:1024px)').matches;
+
+function setMode(m){
+  mode = m; const d = MODES.find(x => x[0] === m);
+  document.querySelectorAll('#tabs .tab').forEach(t => t.classList.toggle('on', t.dataset.m === m));
+  inp.placeholder = d[2]; $('hint').textContent = d[3]; $('exs').innerHTML = '';
+  d[4].forEach(e => { const s = document.createElement('button'); s.className = 'ex mono'; s.textContent = e; s.onclick = () => { inp.value = e; inp.focus(); }; $('exs').appendChild(s); });
+}
+MODES.forEach(d => { const b = document.createElement('button'); b.className = 'tab'; b.dataset.m = d[0]; b.textContent = d[1]; b.onclick = () => setMode(d[0]); $('tabs').appendChild(b); });
+setMode('calc');
+
+const tex = (el, m) => { try { katex.render(m, el, { displayMode: true, throwOnError: false }); } catch (e) { el.textContent = m; } };
+
+function show(d){
+  const out = $('out'); out.innerHTML = '';
+  if (d.err){ out.innerHTML = '<div class="card p-5 border-rose-300 bg-rose-50 text-rose-800 text-sm"></div>'; out.firstChild.textContent = d.err; return; }
+  d.r.forEach(([lab, m]) => {
+    const c = document.createElement('div'); c.className = 'card p-5 border-l-4 border-l-emerald-700';
+    c.innerHTML = '<div class="text-xs font-semibold text-emerald-800 mb-1"></div><div class="res text-xl"></div>'; c.firstChild.textContent = lab;
+    tex(c.lastChild, m); out.appendChild(c);
+  });
+  if (d.p) plot(d.p, out);
+  if (d.s.length){
+    const c = document.createElement('div'); c.className = 'card p-5';
+    c.innerHTML = '<h2 class="font-bold text-[#1f3a5f] mb-2">Procedimiento</h2>';
+    d.s.forEach(([t, m], i) => {
+      const s = document.createElement('div'); s.className = 'step mb-3';
+      s.innerHTML = '<div class="text-sm text-slate-700"></div><div class="m"></div>'; s.firstChild.textContent = (i + 1) + '. ' + t;
+      if (m) tex(s.lastChild, m); c.appendChild(s);
+    });
+    out.appendChild(c);
+  }
+}
+
+function plot(p, out){
+  const wrap = document.createElement('div'); wrap.className = 'card p-3'; const cv = document.createElement('canvas');
+  cv.style.cssText = 'width:100%;height:320px;display:block'; wrap.appendChild(cv); out.appendChild(wrap);
+  const dpr = devicePixelRatio || 1, W = cv.width = cv.clientWidth * dpr, H = cv.height = 320 * dpr, g = cv.getContext('2d');
+  const ys = p.c.flatMap(c => c.p.map(q => q[1]).filter(v => v !== null && Math.abs(v) < 1e4)).sort((a, b) => a - b);
+  let y0 = ys.length ? ys[Math.floor(ys.length * .02)] : -1, y1 = ys.length ? ys[Math.floor(ys.length * .98)] : 1;
+  if (y1 - y0 < 1e-9){ y0 -= 1; y1 += 1; } const pad = (y1 - y0) * .1; y0 -= pad; y1 += pad;
+  const X = v => (v - p.lo) / (p.hi - p.lo) * W, Y = v => H - (v - y0) / (y1 - y0) * H;
+  const nice = r => { const s = Math.pow(10, Math.floor(Math.log10(r / 5))); const m = r / 5 / s; return s * (m < 2 ? 1 : m < 5 ? 2 : 5); };
+  g.font = (11 * dpr) + 'px system-ui'; g.fillStyle = '#64748b'; g.lineWidth = 1;
+  const sx = nice(p.hi - p.lo), sy = nice(y1 - y0);
+  for (let v = Math.ceil(p.lo / sx) * sx; v <= p.hi; v += sx){ g.strokeStyle = '#e2e8f0'; g.beginPath(); g.moveTo(X(v), 0); g.lineTo(X(v), H); g.stroke(); g.fillText(+v.toFixed(4), X(v) + 3, Math.min(H - 4, Math.max(12, Y(0) - 4))); }
+  for (let v = Math.ceil(y0 / sy) * sy; v <= y1; v += sy){ g.strokeStyle = '#e2e8f0'; g.beginPath(); g.moveTo(0, Y(v)); g.lineTo(W, Y(v)); g.stroke(); g.fillText(+v.toFixed(4), 4, Y(v) - 3); }
+  g.strokeStyle = '#1b2433'; g.lineWidth = 1.5 * dpr; g.beginPath(); g.moveTo(X(0), 0); g.lineTo(X(0), H); g.moveTo(0, Y(0)); g.lineTo(W, Y(0)); g.stroke();
+  const col = ['#c2410c', '#1d4ed8', '#15803d', '#7e22ce', '#be123c'];
+  p.c.forEach((c, i) => {
+    g.strokeStyle = col[i % 5]; g.lineWidth = 2.2 * dpr; g.beginPath(); let pen = false;
+    c.p.forEach(([a, b]) => { if (b === null || b < y0 - (y1 - y0) || b > y1 + (y1 - y0)){ pen = false; return; } pen ? g.lineTo(X(a), Y(b)) : g.moveTo(X(a), Y(b)); pen = true; });
+    g.stroke(); g.fillStyle = col[i % 5]; g.font = (12 * dpr) + 'px system-ui'; g.fillText('f' + (i + 1) + ' = ' + c.l, 10 * dpr, (18 + i * 16) * dpr);
+  });
+}
+
+async function go(){
+  const text = inp.value.trim(); if (!ready || !text) return;
+  $('goBtn').disabled = true; $('out').innerHTML = '<div class="card p-5 text-slate-500 text-sm">Calculando…</div>';
+  await new Promise(r => setTimeout(r, 30));
+  let d; try { d = JSON.parse(py.globals.get('run')(mode, text)); } catch (e) { d = { err: String(e).slice(0, 160) }; }
+  show(d); $('goBtn').disabled = false;
+}
+$('goBtn').onclick = go;
+inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+
+(async () => {
+  const st = $('st');
+  try {
+    py = await loadPyodide(); st.textContent = 'Cargando SymPy…';
+    await py.loadPackage('sympy');
+    py.runPython(document.getElementById('pysrc').textContent);
+    ready = true; $('goBtn').disabled = false;
+    st.textContent = 'Motor listo'; st.className = 'text-xs font-semibold px-3 py-1 rounded-full bg-emerald-100 text-emerald-800';
+  } catch (e) {
+    st.textContent = 'No se pudo cargar el motor (¿sin conexión?)'; st.className = 'text-xs font-semibold px-3 py-1 rounded-full bg-rose-100 text-rose-800';
+  }
+})();
+</script>
+</body>
+</html>
